@@ -4,7 +4,7 @@ import os
 
 app = Flask(__name__)
 
-# --- Phase 0: Load Dictionary (The Language Definition) ---
+# --- Symbol Table ---
 def load_dictionary():
     words = set()
     if os.path.exists("dictionary.txt"):
@@ -12,35 +12,21 @@ def load_dictionary():
             for line in f:
                 words.add(line.strip().lower())
     else:
-        # Emergency defaults if dictionary.txt is missing
-        words = {"this", "is", "a", "test", "of", "the", "system", "and", "it", "has", "grammar", "errors", "with", "python"}
+        words = {"she", "said", "this", "is", "a", "test", "system", "grammar"}
     return words
 
 word_db = load_dictionary()
 
-# --- Phase 3: Semantic Repair (The Suggestion Engine) ---
 def get_best_match(word):
-    """Simple Similarity Algorithm: Finds the word with the most matching characters"""
     word = word.lower()
     best_word = "???"
     min_distance = 99
-    
     for dict_word in word_db:
-        # Length filter for performance
         if abs(len(dict_word) - len(word)) > 2: continue
-        
-        # Calculate 'Distance' (lower is better)
-        # We check how many characters are different
-        diff = 0
-        max_len = max(len(word), len(dict_word))
-        for i in range(max_len):
-            if i >= len(word) or i >= len(dict_word) or word[i] != dict_word[i]:
-                diff += 1
-        
+        diff = max(len(word), len(dict_word)) - sum(1 for a, b in zip(word, dict_word) if a == b)
         if diff < min_distance:
             min_distance = diff
             best_word = dict_word
-            
     return best_word
 
 @app.route('/')
@@ -50,14 +36,27 @@ def home():
 @app.route('/check', methods=['POST'])
 def check_text():
     text = ""
-    if 'file' in request.files:
-        file = request.files['file']
-        text = file.read().decode('utf-8')
+    
+    # Priority logic for Input Stream
+    if 'file' in request.files and request.files['file'].filename != '':
+        text = request.files['file'].read().decode('utf-8')
     elif request.is_json:
         text = request.get_json().get('text', '')
+    else:
+        # Fallback for form data
+        text = request.form.get('text', '')
 
-    # --- Phase 1: Lexical Analysis (Tokenization) ---
-    # Keeps words, punctuation, and spaces separate
+    # --- Phase 1: Syntax Analysis (Capitalization) ---
+    grammar_warning = None
+    first_letter_search = re.search(r'[a-zA-Z]', text)
+    
+    has_grammar_error = False
+    if first_letter_search:
+        if not first_letter_search.group().isupper():
+            grammar_warning = "Syntax Violation: Sentence must start with an Uppercase letter."
+            has_grammar_error = True
+
+    # --- Phase 2: Lexical Analysis ---
     raw_tokens = re.findall(r"\b[a-zA-Z']+\b|[^\w\s]|\s+", text)
     
     errors = []
@@ -65,29 +64,34 @@ def check_text():
     total_words = 0
 
     for token in raw_tokens:
-        if re.match(r"[a-zA-Z']+", token): # If it's a word
+        if re.match(r"[a-zA-Z']+", token):
             total_words += 1
-            low_word = token.lower()
-            if low_word not in word_db:
-                suggestion = get_best_match(low_word)
-                errors.append({"original": token, "corrected": suggestion})
-                # Wrap the correction in HTML tags for the UI
+            if token.lower() not in word_db:
+                suggestion = get_best_match(token)
+                errors.append(token)
                 corrected_html.append(f'<span class="err-strike">{token}</span><span class="fix-green">{suggestion}</span>')
             else:
                 corrected_html.append(token)
         else:
-            # Punctuation/Spaces are passed through untouched
             corrected_html.append(token)
 
-    # Accuracy Calculation
-    accuracy = 100
+    # --- Phase 4: Scoring (Accuracy) ---
+    # Accuracy is reduced if there are spelling OR grammar errors
+    error_count = len(errors)
+    penalty = 1 if has_grammar_error else 0
+    
     if total_words > 0:
-        accuracy = round(((total_words - len(errors)) / total_words) * 100, 1)
+        accuracy = round(((total_words - (error_count + penalty)) / total_words) * 100, 1)
+    else:
+        accuracy = 100
+        
+    if accuracy < 0: accuracy = 0
 
     return jsonify({
-        "total_errors": len(errors),
+        "total_errors": error_count + penalty,
         "accuracy": accuracy,
-        "corrected_text": "".join(corrected_html)
+        "corrected_text": "".join(corrected_html),
+        "grammar_issue": grammar_warning
     })
 
 if __name__ == '__main__':
